@@ -1,7 +1,131 @@
 #!/bin/bash
 
+REPO_PATH="$HOME/var/tarbuild"
+REPO_SRCPATH="${REPO_PATH}/sources"
+REPO_CACHE="${REPO_PATH}/cache"
+logfile=$HOME/var/log/`basename $0`.log
+pidfile=$HOME/tmp/`basename $0`.pid
 
-target=$1
+echo "Launching deployer" >> $logfile
+if [ "x$1" != "x--" ];
+then 
+	echo "Fork parent process ${0} ${1}"
+	$0 -- $@ </dev/null &>/dev/null & 
+	disown $! 
+	echo $! >$HOME/tmp/`basename $0`.pid 
+	echo "Exiting........."
+	sleep 1
+	exit 0
+fi
+
+TARGET=$2
+CURR_VERSION="0.0.0-0"
+
+if [ ! -d  $REPO_CACHE ];
+then
+	echo "Creating cache dir" >> $logfile
+	mkdir -p $REPO_CACHE || exit 1
+fi
+
+if [ -f  "$REPO_CACHE/$TARGET" ];
+then
+	echo "Attempting to read current version from cache file $REPO_CACHE/$TARGET" >> $logfile
+	CURR_VERSION=`cat $REPO_CACHE/$TARGET`
+fi
+
+if [ "x$CURR_VERSION" == "x" ];
+then
+	echo "Problem determining current version" >> $logfile
+	exit 1;
+fi
+
+NEXT_VERSION=$CURR_VERSION
+
+echo "Setting next upgrade version for $TARGET to $NEXT_VERSION" >> $logfile
+
+if [ "x$TARGET" == "x" ];
+then
+	echo "No target found. Aborting Publishing" >> $logfile
+	exit 1;
+fi
+
+echo "Scanning for package to upgrade $TARGET" >> $logfile
+
+for i in `ls ${REPO_SRCPATH}/${TARGET}*.tar.gz`;
+do
+	VERSION=`echo $i | sed -n 's/..*\([0-9][0-9]*[.][0-9][0-9]*[.][0-9][0-9]*-[0-9][0-9]*\).tar.gz/\1/p'`
+
+	echo "Comparing verion $VERSION TO $NEXT_VERSION" >> $logfile
+	next_major=`echo $NEXT_VERSION | cut -d'.' -f1`
+	next_minor=`echo $NEXT_VERSION | cut -d'.' -f2`
+	releasebuild=`echo $NEXT_VERSION | cut -d'.' -f3`
+	next_release=`echo $releasebuild | cut -d'-' -f1`
+	next_build=`echo $releasebuild | cut -d'-' -f2`
+
+	major=`echo $VERSION | cut -d'.' -f1`
+	minor=`echo $VERSION | cut -d'.' -f2`
+	releasebuild=`echo $VERSION | cut -d'.' -f3`
+	release=`echo $releasebuild | cut -d'-' -f1`
+	build=`echo $releasebuild | cut -d'-' -f2`
+
+	if [ "x$VERSION" == "x" ];
+	then
+		continue;
+	fi
+
+	if [ $major -lt $next_major ];
+	then
+		continue;
+	fi
+	if [ $major -eq $next_major -a $minor -lt $next_minor ];
+	then
+		continue;
+	fi
+	if [ $major -eq $next_major -a $minor -eq $next_minor -a $release -lt $next_release ];
+	then
+		continue;
+	fi
+	if [ $major -eq $next_major -a $minor -eq $next_minor -a $release -eq $next_release -a $build -le $next_build ];
+	then
+		continue;
+	fi
+
+	NEXT_VERSION=$VERSION	
+done
 
 
-echo $target >> ${HOME}/var/log/tgzpublisher.log
+if [ $NEXT_VERSION == "0.0.0-0" ];
+then	
+	echo "No suitable package found for target $TARGET" >> $logfile
+	exit 1
+fi
+
+CDIR=`pwd`
+
+TMPDIR=`mktemp -d ${HOME}/tmp/${TARGET}.XXXX` || exit 1
+cd $TMPDIR
+
+tar -xzf ${REPO_SRCPATH}/${TARGET}-${NEXT_VERSION}.tar.gz
+
+if [ ! -d "${TMPDIR}/${TARGET}-${NEXT_VERSION}" ];
+then
+	echo "Target dir ${TMPDIR}/${TARGET}-${NEXT_VERSION} expected but not found" >> $logfile
+	rm -rf $TMPDIR
+	exit 1
+fi
+
+CMD=${TMPDIR}/${TARGET}-${NEXT_VERSION}/installer/install.sh
+if [ ! -f "${CMD}" ];
+then
+        echo "Installation script ${CMD} expected but not found" >> $logfile
+	rm -rf $TMPDIR
+        exit 1
+fi
+
+echo "Executing installation script of $CMD" >> $logfile
+sh  $CMD
+$RETVAL=$?
+[ $RETVAL -ne 0 ] && echo "Installation of $TARGET ${NEXT_VERSION} Failed to complete successfully" 
+rm -rf $TMPDIR
+cd $CDIR
+echo "${NEXT_VERSION}" > $REPO_CACHE/$TARGET
