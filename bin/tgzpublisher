@@ -1,0 +1,7 @@
+#!/bin/bash
+
+
+target=$1
+
+
+echo $target >> ${HOME}/var/log/tgzpublisher.log
